@@ -1,0 +1,9 @@
+[workspace]
+members = [
+  "client",
+  "server",
+]
+
+[patch.crates-io]
+nng = { git = "https://github.com/alexkornitzer/nng-rs" }
+nng-sys = { git = "https://github.com/alexkornitzer/nng-sys" }
