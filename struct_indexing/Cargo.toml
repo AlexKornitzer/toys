@@ -1,0 +1,8 @@
+[package]
+name = "struct_indexing"
+version = "0.1.0"
+authors = ["Alex Kornitzer <a.kornitzer@me.com>"]
+edition = "2018"
+
+[dependencies]
+libc = "0.2"
