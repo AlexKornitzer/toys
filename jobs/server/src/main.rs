@@ -1,59 +1,93 @@
-// Design
-//
-// 1. 6000:
-//  a. Pub/Sub - used for state updates/verification and heartbeats
-//  b. Survey - used for leader election
-// 2. 6001:
-//  a. Req/Rep - used for comms to leader (i.e. mutating state changes, etc)
+#[macro_use]
+extern crate anyhow;
 
-use nng::{Protocol, Socket};
-use uuid::Uuid;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
-fn respondent(address: &str) -> Result<(), nng::Error> {
-    let uuid = Uuid::new_v4();
-    println!("{}", uuid);
-    let socket = Socket::new(Protocol::Respondent0)?;
-    socket.dial(&address)?;
-    loop {
-        if let Ok(msg) = socket.recv() {
-            println!("{}", String::from_utf8_lossy(msg.as_slice()));
-            socket.send(format!("{}", uuid).as_bytes()).unwrap();
-        }
-    }
+use anyhow::Result;
+use quorum::{Floor, Lobby};
+use structopt::StructOpt;
+use tracing::info;
+use tracing_subscriber;
+
+#[derive(StructOpt)]
+pub struct Opts {
+    #[structopt(default_value = "srvr0")]
+    name: String,
+    #[structopt(default_value = "6000")]
+    port: u16,
+    peers: Vec<String>,
 }
 
-fn surveyor(address: &str) -> Result<(), nng::Error> {
-    let uuid = Uuid::new_v4();
-    println!("{}", uuid);
-    let socket = Socket::new(Protocol::Surveyor0)?;
-    socket.listen(&address)?;
-    let mut count = 0;
-    loop {
-        socket.send(format!("{}", count).as_bytes()).unwrap();
-        loop {
-            let resp = socket.recv();
-            match resp {
-                Ok(msg) => println!("{}", String::from_utf8_lossy(msg.as_slice())),
-                Err(nng::Error::TimedOut) => break,
-                Err(err) => return Err(err),
-            }
-        }
-        count += 1;
-    }
+pub enum Request {
+    Pop,
+    Push,
+}
+pub struct Manager;
+#[derive(Default)]
+pub struct Stack {
+    inner: Vec<String>,
+}
+impl Stack {
+    pub fn pop(&self) {}
+    pub fn push(&self) {}
+}
+pub struct State {
+    pub stack: Stack,
 }
 
 fn main() {
-    let args = std::env::args();
-    if args.len() < 2 {
-        return;
-    }
-    let mut args = args.into_iter();
-    args.next();
-    let address = format!("tcp://{}:{}", args.next().unwrap(), args.next().unwrap());
-
-    if let Ok(_) = respondent(&address) {
-        println!("was respondent");
-    } else if let Ok(_) = surveyor(&address) {
-        println!("was surveyor");
-    }
+    tracing_subscriber::fmt::init();
+    let opts = Opts::from_args();
+    let state = Arc::new(State {
+        stack: Stack::default(),
+    });
+    let s = state.clone();
+    let manifest = move |v| {
+        let req = Request::Pop;
+        match req {
+            Request::Pop => s.stack.pop(),
+            Request::Push => s.stack.push(),
+        }
+    };
+    let forum = Lobby::register("127.0.0.1".to_owned())
+        .peers(opts.peers)
+        .port(opts.port)
+        .enter(manifest)
+        .unwrap();
+    let manager = Arc::new(Manager);
+    let m = manager.clone();
+    let s = state.clone();
+    let cmd = thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(5));
+            // receive some message...
+            let req = Request::Pop;
+            match forum.floor() {
+                Some(Floor::Chair(chair)) => {
+                    info!("chair");
+                    match req {
+                        Request::Pop => {
+                            s.stack.pop();
+                            chair.decree("bloop".to_owned()).unwrap();
+                        }
+                        Request::Push => {
+                            s.stack.push();
+                            chair.decree("bloop".to_owned()).unwrap();
+                        }
+                    }
+                }
+                Some(Floor::Member(member)) => {
+                    info!("member");
+                    member.propose("bloop".to_owned()).unwrap();
+                    // ACTION...
+                }
+                None => {
+                    info!("hung");
+                }
+            }
+        }
+    });
+    cmd.join().unwrap();
 }
